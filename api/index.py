@@ -1,5 +1,6 @@
 import json
 import statistics
+import os
 from typing import List, Dict, Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +19,11 @@ app.add_middleware(
 )
 
 # Load telemetry data
-with open("q-vercel-latency.json", "r") as f:
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+json_path = os.path.join(parent_dir, "q-vercel-latency.json")
+
+with open(json_path, "r") as f:
     TELEMETRY_DATA = json.load(f)
 
 
@@ -54,7 +59,20 @@ def calculate_percentile(data: List[float], percentile: float) -> float:
     return sorted_data[lower] * (1 - weight) + sorted_data[upper] * weight
 
 
-@app.post("/api/metrics", response_model=LatencyResponse)
+@app.options("/api/latency")
+async def preflight():
+    """Handle CORS preflight requests."""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
+            "Access-Control-Allow-Headers": "Content-Type",
+        }
+    )
+
+
+@app.post("/api/latency", response_model=LatencyResponse)
 async def get_metrics(request: LatencyRequest) -> JSONResponse:
     """
     Calculate latency and uptime metrics for specified regions.
