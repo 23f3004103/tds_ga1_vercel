@@ -3,6 +3,7 @@ import statistics
 from typing import List, Dict, Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 app = FastAPI()
@@ -12,7 +13,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["POST", "OPTIONS"],
+    allow_methods=["POST", "OPTIONS", "GET"],
     allow_headers=["*"],
 )
 
@@ -54,7 +55,7 @@ def calculate_percentile(data: List[float], percentile: float) -> float:
 
 
 @app.post("/api/metrics", response_model=LatencyResponse)
-async def get_metrics(request: LatencyRequest) -> LatencyResponse:
+async def get_metrics(request: LatencyRequest) -> JSONResponse:
     """
     Calculate latency and uptime metrics for specified regions.
     
@@ -96,10 +97,23 @@ async def get_metrics(request: LatencyRequest) -> LatencyResponse:
             breaches=breaches
         )
     
-    return LatencyResponse(metrics=metrics)
+    response_data = LatencyResponse(metrics=metrics)
+    return JSONResponse(
+        content=response_data.model_dump(),
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint for Vercel."""
-    return {"status": "ok"}
+    return JSONResponse(
+        content={"status": "ok"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
