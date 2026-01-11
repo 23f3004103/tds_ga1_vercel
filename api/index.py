@@ -1,19 +1,10 @@
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import json, os, statistics
 from typing import List, Dict
 
 app = FastAPI()
-
-# CORS — this alone is enough
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["POST", "OPTIONS"],
-    allow_headers=["*"],
-)
 
 
 @app.middleware("http")
