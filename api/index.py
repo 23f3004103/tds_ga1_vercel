@@ -1,137 +1,193 @@
-import json
-import statistics
-import os
-from typing import List, Dict, Any
+# import json
+# import statistics
+# import os
+# from typing import List, Dict, Any
+# from fastapi import FastAPI
+# from fastapi.middleware.cors import CORSMiddleware
+# from fastapi.responses import JSONResponse
+# from pydantic import BaseModel
+
+# app = FastAPI()
+
+# # Enable CORS for POST requests
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],
+#     allow_credentials=False,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# # Load telemetry data
+# current_dir = os.path.dirname(os.path.abspath(__file__))
+# parent_dir = os.path.dirname(current_dir)
+# json_path = os.path.join(parent_dir, "q-vercel-latency.json")
+
+# with open(json_path, "r") as f:
+#     TELEMETRY_DATA = json.load(f)
+
+
+# class LatencyRequest(BaseModel):
+#     regions: List[str]
+#     threshold_ms: float
+
+
+# class RegionMetrics(BaseModel):
+#     avg_latency: float
+#     p95_latency: float
+#     avg_uptime: float
+#     breaches: int
+
+
+# class LatencyResponse(BaseModel):
+#     metrics: Dict[str, RegionMetrics]
+
+
+# def calculate_percentile(data: List[float], percentile: float) -> float:
+#     """Calculate percentile value from a list of numbers."""
+#     if not data:
+#         return 0.0
+#     sorted_data = sorted(data)
+#     index = (percentile / 100) * (len(sorted_data) - 1)
+#     lower = int(index)
+#     upper = lower + 1
+    
+#     if upper >= len(sorted_data):
+#         return float(sorted_data[lower])
+    
+#     weight = index - lower
+#     return sorted_data[lower] * (1 - weight) + sorted_data[upper] * weight
+
+
+# @app.options("/api/latency")
+# async def preflight():
+#     """Handle CORS preflight requests."""
+#     return JSONResponse(
+#         content={},
+#         headers={
+#             "Access-Control-Allow-Origin": "*",
+#             "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
+#             "Access-Control-Allow-Headers": "Content-Type",
+#         }
+#     )
+
+
+# @app.post("/api/latency", response_model=LatencyResponse)
+# async def get_metrics(request: LatencyRequest) -> JSONResponse:
+#     """
+#     Calculate latency and uptime metrics for specified regions.
+    
+#     Args:
+#         request: JSON body with regions list and threshold_ms
+        
+#     Returns:
+#         Per-region metrics including avg_latency, p95_latency, avg_uptime, and breaches count
+#     """
+#     metrics = {}
+    
+#     for region in request.regions:
+#         # Filter data for this region
+#         region_data = [record for record in TELEMETRY_DATA if record["region"] == region]
+        
+#         if not region_data:
+#             metrics[region] = RegionMetrics(
+#                 avg_latency=0.0,
+#                 p95_latency=0.0,
+#                 avg_uptime=0.0,
+#                 breaches=0
+#             )
+#             continue
+        
+#         # Extract latency and uptime values
+#         latencies = [record["latency_ms"] for record in region_data]
+#         uptimes = [record["uptime_pct"] for record in region_data]
+        
+#         # Calculate metrics
+#         avg_latency = statistics.mean(latencies)
+#         p95_latency = calculate_percentile(latencies, 95)
+#         avg_uptime = statistics.mean(uptimes)
+#         breaches = sum(1 for latency in latencies if latency > request.threshold_ms)
+        
+#         metrics[region] = RegionMetrics(
+#             avg_latency=round(avg_latency, 2),
+#             p95_latency=round(p95_latency, 2),
+#             avg_uptime=round(avg_uptime, 2),
+#             breaches=breaches
+#         )
+    
+#     response_data = LatencyResponse(metrics=metrics)
+#     return JSONResponse(
+#         content=response_data.model_dump(),
+#         headers={
+#             "Access-Control-Allow-Origin": "*",
+#             "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
+#             "Access-Control-Allow-Headers": "*",
+#         }
+#     )
+
+
+# @app.get("/health")
+# async def health_check():
+#     """Health check endpoint for Vercel."""
+#     return JSONResponse(
+#         content={"status": "ok"},
+#         headers={
+#             "Access-Control-Allow-Origin": "*",
+#         }
+#     )
+
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import json, os, statistics
+from typing import List, Dict
 
 app = FastAPI()
 
-# Enable CORS for POST requests
+# CORS — this alone is enough
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
+    allow_methods=["POST"],
     allow_headers=["*"],
 )
 
-# Load telemetry data
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-json_path = os.path.join(parent_dir, "q-vercel-latency.json")
+# Load data
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_PATH = os.path.join(BASE_DIR, "q-vercel-latency.json")
 
-with open(json_path, "r") as f:
-    TELEMETRY_DATA = json.load(f)
-
+with open(DATA_PATH) as f:
+    DATA = json.load(f)
 
 class LatencyRequest(BaseModel):
     regions: List[str]
     threshold_ms: float
 
+@app.post("/api/latency")
+def latency(req: LatencyRequest):
+    result = {}
 
-class RegionMetrics(BaseModel):
-    avg_latency: float
-    p95_latency: float
-    avg_uptime: float
-    breaches: int
+    for region in req.regions:
+        rows = [r for r in DATA if r["region"] == region]
 
-
-class LatencyResponse(BaseModel):
-    metrics: Dict[str, RegionMetrics]
-
-
-def calculate_percentile(data: List[float], percentile: float) -> float:
-    """Calculate percentile value from a list of numbers."""
-    if not data:
-        return 0.0
-    sorted_data = sorted(data)
-    index = (percentile / 100) * (len(sorted_data) - 1)
-    lower = int(index)
-    upper = lower + 1
-    
-    if upper >= len(sorted_data):
-        return float(sorted_data[lower])
-    
-    weight = index - lower
-    return sorted_data[lower] * (1 - weight) + sorted_data[upper] * weight
-
-
-@app.options("/api/latency")
-async def preflight():
-    """Handle CORS preflight requests."""
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-            "Access-Control-Allow-Headers": "Content-Type",
-        }
-    )
-
-
-@app.post("/api/latency", response_model=LatencyResponse)
-async def get_metrics(request: LatencyRequest) -> JSONResponse:
-    """
-    Calculate latency and uptime metrics for specified regions.
-    
-    Args:
-        request: JSON body with regions list and threshold_ms
-        
-    Returns:
-        Per-region metrics including avg_latency, p95_latency, avg_uptime, and breaches count
-    """
-    metrics = {}
-    
-    for region in request.regions:
-        # Filter data for this region
-        region_data = [record for record in TELEMETRY_DATA if record["region"] == region]
-        
-        if not region_data:
-            metrics[region] = RegionMetrics(
-                avg_latency=0.0,
-                p95_latency=0.0,
-                avg_uptime=0.0,
-                breaches=0
-            )
+        if not rows:
+            result[region] = {
+                "avg_latency": 0,
+                "p95_latency": 0,
+                "avg_uptime": 0,
+                "breaches": 0
+            }
             continue
-        
-        # Extract latency and uptime values
-        latencies = [record["latency_ms"] for record in region_data]
-        uptimes = [record["uptime_pct"] for record in region_data]
-        
-        # Calculate metrics
-        avg_latency = statistics.mean(latencies)
-        p95_latency = calculate_percentile(latencies, 95)
-        avg_uptime = statistics.mean(uptimes)
-        breaches = sum(1 for latency in latencies if latency > request.threshold_ms)
-        
-        metrics[region] = RegionMetrics(
-            avg_latency=round(avg_latency, 2),
-            p95_latency=round(p95_latency, 2),
-            avg_uptime=round(avg_uptime, 2),
-            breaches=breaches
-        )
-    
-    response_data = LatencyResponse(metrics=metrics)
-    return JSONResponse(
-        content=response_data.model_dump(),
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-            "Access-Control-Allow-Headers": "*",
-        }
-    )
 
+        lat = [r["latency_ms"] for r in rows]
+        up = [r["uptime_pct"] for r in rows]
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint for Vercel."""
-    return JSONResponse(
-        content={"status": "ok"},
-        headers={
-            "Access-Control-Allow-Origin": "*",
+        result[region] = {
+            "avg_latency": round(statistics.mean(lat), 2),
+            "p95_latency": round(statistics.quantiles(lat, n=100)[94], 2),
+            "avg_uptime": round(statistics.mean(up), 2),
+            "breaches": sum(1 for x in lat if x > req.threshold_ms)
         }
-    )
+
+    return {"metrics": result}
