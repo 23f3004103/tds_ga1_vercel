@@ -1,107 +1,115 @@
 from __future__ import annotations
 
 import json
-import os
-import statistics
-from typing import Dict, List
+import math
+from pathlib import Path
+from statistics import mean
+from typing import Any, Dict, List
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
+app = FastAPI(title="eShopCo Latency Metrics")
 
-app = FastAPI(redirect_slashes=False)
-
-
-def _add_cors_headers(response: JSONResponse) -> JSONResponse:
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    return response
-
-
-@app.middleware("http")
-async def cors_middleware(request: Request, call_next):
-    response = await call_next(request)
-    # Always include CORS headers so automated checkers see them
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    return response
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
-# Load data bundled with the function
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(BASE_DIR, "q-vercel-latency.json")
-with open(DATA_PATH, "r", encoding="utf-8") as f:
-    DATA = json.load(f)
-
-
-class LatencyRequest(BaseModel):
-    regions: List[str]
+class MetricsRequest(BaseModel):
+    regions: List[str] = Field(..., min_length=1)
     threshold_ms: float
 
 
-def percentile(data: List[float], p: float) -> float:
-    if not data:
-        return 0.0
-    if p <= 0:
-        return float(min(data))
-    if p >= 100:
-        return float(max(data))
-
-    sorted_data = sorted(float(x) for x in data)
-    idx = (p / 100.0) * (len(sorted_data) - 1)
-    lo = int(idx)
-    hi = min(lo + 1, len(sorted_data) - 1)
-    frac = idx - lo
-    return sorted_data[lo] * (1 - frac) + sorted_data[hi] * frac
+def _load_telemetry() -> List[Dict[str, Any]]:
+    telemetry_path = Path(__file__).resolve().parents[1] / "q-vercel-latency.json"
+    if not telemetry_path.exists():
+        raise RuntimeError(f"Telemetry file not found: {telemetry_path}")
+    return json.loads(telemetry_path.read_text(encoding="utf-8"))
 
 
-@app.options("/")
-def preflight_root():
-    return _add_cors_headers(JSONResponse(content={}))
+_TELEMETRY: List[Dict[str, Any]]
+try:
+    _TELEMETRY = _load_telemetry()
+except Exception:
+    _TELEMETRY = []
 
 
-@app.options("/{path:path}")
-def preflight_any(path: str):
-    return _add_cors_headers(JSONResponse(content={}))
+def _percentile_linear(sorted_values: List[float], q: float) -> float:
+    """Numpy-like percentile with linear interpolation.
+
+    q in [0, 1]. For n==1 returns the single value.
+    """
+
+    n = len(sorted_values)
+    if n == 0:
+        raise ValueError("percentile of empty list")
+    if n == 1:
+        return float(sorted_values[0])
+
+    q = max(0.0, min(1.0, float(q)))
+    pos = (n - 1) * q
+    lower_index = int(math.floor(pos))
+    upper_index = int(math.ceil(pos))
+
+    lower_value = float(sorted_values[lower_index])
+    upper_value = float(sorted_values[upper_index])
+    if lower_index == upper_index:
+        return lower_value
+
+    weight = pos - lower_index
+    return lower_value + (upper_value - lower_value) * weight
 
 
-def _compute_metrics(req: LatencyRequest) -> Dict[str, Dict[str, float | int]]:
-    metrics: Dict[str, Dict[str, float | int]] = {}
-
-    for region in req.regions:
-        rows = [r for r in DATA if r.get("region") == region]
-
-        if not rows:
-            metrics[region] = {
-                "avg_latency": 0,
-                "p95_latency": 0,
-                "avg_uptime": 0,
-                "breaches": 0,
-            }
-            continue
-
-        lat = [float(r["latency_ms"]) for r in rows]
-        up = [float(r["uptime_pct"]) for r in rows]
-
-        metrics[region] = {
-            "avg_latency": round(statistics.mean(lat), 2),
-            "p95_latency": round(percentile(lat, 95), 2),
-            "avg_uptime": round(statistics.mean(up), 2),
-            "breaches": sum(1 for x in lat if x > req.threshold_ms),
+def _region_metrics(region: str, threshold_ms: float) -> Dict[str, Any]:
+    rows = [r for r in _TELEMETRY if r.get("region") == region]
+    if not rows:
+        return {
+            "avg_latency": None,
+            "p95_latency": None,
+            "avg_uptime": None,
+            "breaches": 0,
+            "count": 0,
         }
 
-    return metrics
+    latencies = [float(r["latency_ms"]) for r in rows]
+    uptimes = [float(r["uptime_pct"]) for r in rows]
+
+    latencies_sorted = sorted(latencies)
+
+    avg_latency = mean(latencies)
+    p95_latency = _percentile_linear(latencies_sorted, 0.95)
+    avg_uptime = mean(uptimes)
+    breaches = sum(1 for v in latencies if v > threshold_ms)
+
+    return {
+        "avg_latency": round(avg_latency, 2),
+        "p95_latency": round(p95_latency, 2),
+        "avg_uptime": round(avg_uptime, 3),
+        "breaches": int(breaches),
+        "count": int(len(rows)),
+    }
 
 
 @app.post("/")
-def latency_metrics_root(req: LatencyRequest):
-    return _add_cors_headers(JSONResponse(content={"metrics": _compute_metrics(req)}))
+@app.post("/api/latency")
+async def latency_metrics(body: MetricsRequest) -> Dict[str, Any]:
+    if not _TELEMETRY:
+        raise HTTPException(status_code=500, detail="Telemetry data not loaded")
 
+    regions = [r.strip() for r in body.regions if r and r.strip()]
+    if not regions:
+        raise HTTPException(status_code=422, detail="regions must be a non-empty list")
 
-@app.post("/{path:path}")
-def latency_metrics_any(path: str, req: LatencyRequest):
-    # Accept any path so graders hitting /api/latency/ or similar won't get redirected.
-    return _add_cors_headers(JSONResponse(content={"metrics": _compute_metrics(req)}))
+    threshold_ms = float(body.threshold_ms)
+
+    metrics = {region: _region_metrics(region, threshold_ms) for region in regions}
+    return {
+        "threshold_ms": threshold_ms,
+        "metrics": metrics,
+    }
